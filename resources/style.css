@@ -1,0 +1,4 @@
+SidebarRow {
+  background-color: var(--view-bg-color);
+  color: var(--view-fg-color);
+}

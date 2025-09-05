@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+    <gresource prefix="@APP_PREFIX@">
+        <file compressed="true">style.css</file>
+        @APP_TEMPLATES@
+    </gresource>
+    <gresource prefix="@APP_PREFIX@/icons/scalable/actions">
+        @APP_ICONS@
+    </gresource>
+</gresources>
