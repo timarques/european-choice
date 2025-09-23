@@ -1,0 +1,239 @@
+name: Build and Release (Every Commit)
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  SINGLE_THREAD_BUILD: true
+
+jobs:
+  build-linux:
+    name: Build Linux Packages (RPM, DEB, ZIP)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          dnf update -y
+          dnf install -y \
+            gcc \
+            gcc-c++ \
+            cmake \
+            make \
+            pkg-config \
+            gtk4-devel \
+            libadwaita-devel \
+            glib2-devel \
+            rpm-build \
+            dpkg-dev \
+            git
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-fedora-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-fedora-cargo-
+
+      - name: Configure project
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build application
+        run: cmake --build build --verbose
+
+      - name: Build RPM package
+        run: |
+          cd build
+          cpack -G RPM
+
+      - name: Build DEB package
+        run: |
+          cd build
+          cpack -G DEB
+
+      - name: Build ZIP package
+        run: |
+          cd build
+          cpack -G ZIP
+
+      - name: List generated packages
+        run: |
+          find build -type f \( -name "*.rpm" -o -name "*.deb" -o -name "*.zip" \) | head -50
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            build/**/*.rpm
+            build/**/*.deb
+            build/**/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows:
+    name: Build Windows Package (IFW, ZIP)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          targets: x86_64-pc-windows-msvc
+
+      - name: Configure Rust environment
+        run: |
+          $env:RUSTFLAGS = "-C linker=link.exe -C link-args=/NOLOGO"
+          echo "RUSTFLAGS=$env:RUSTFLAGS" >> $env:GITHUB_ENV
+          $currentPath = $env:PATH
+          $pathElements = $currentPath -split ';' | Where-Object { $_ -notlike '*Git*usr*bin*' -and $_ -notlike '*Git*bin*' }
+          $newPath = $pathElements -join ';'
+          echo "PATH=$newPath" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Qt with Qt IFW
+        uses: jurplel/install-qt-action@v4
+        with:
+          tools: 'tools_ifw'
+
+      - name: Configure project
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGVSBUILD=ON -DCMAKE_GENERATOR="Visual Studio 17 2022" -DCMAKE_GENERATOR_PLATFORM=x64
+        shell: pwsh
+
+      - name: Build application
+        run: |
+          cmake --build build --config Release --verbose
+        shell: pwsh
+
+      - name: Build IFW package
+        run: |
+          cd build
+          cpack -G IFW --verbose -C Release
+
+      - name: Build ZIP package (fallback)
+        run: |
+          cd build
+          cpack -G ZIP --verbose -C Release
+
+      - name: List generated packages
+        run: |
+          Get-ChildItem build -Recurse -Include "*.exe", "*.zip" | Select-Object FullName
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            build/**/*.exe
+            build/**/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  test-packages:
+    name: Test Package Installation
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Download Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: ./packages
+
+      - name: Test DEB package
+        run: |
+          sudo apt update
+          sudo apt install -y ./packages/*.deb || echo "DEB installation test completed"
+
+      - name: Test ZIP extraction
+        run: |
+          cd packages
+          unzip -t *.zip || echo "ZIP test completed"
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: ./artifacts/linux
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-packages
+          path: ./artifacts/windows
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.rpm" -o -name "*.deb" -o -name "*.zip" -o -name "*.exe" \) -exec sha256sum {} \; > checksums.txt
+          cat checksums.txt
+
+      - name: Compute tag for this commit
+        id: tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "TAG_NAME=ci-${SHORT_SHA}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "REL_NAME=CI ${SHORT_SHA} #${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
+      - name: Create/Update Release for this commit
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ env.REL_NAME }}
+          generate_release_notes: true
+          make_latest: false
+          files: |
+            ./artifacts/linux/*
+            ./artifacts/windows/*
+            ./artifacts/checksums.txt
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

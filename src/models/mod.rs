@@ -13,6 +13,11 @@ type Categories = &'static[usize];
 #[cfg(not(runtime))]
 type Categories = Vec<String>;
 
+#[cfg(runtime)]
+type Array<T> = &'static[T];
+#[cfg(not(runtime))]
+type Array<T> = Vec<T>;
+
 pub use self::country::Country;
 pub use self::product::Product;
 pub use self::category::Category;

@@ -1,41 +1,54 @@
 [package]
-name = "european_alternatives"
-description = "European Alternatives"
+name = "european-choice"
+description = "A GTK desktop catalog browser for discovering European software alternatives and promoting digital sovereignty."
 version = "0.1.0"
 edition = "2024"
 build = "build.rs"
+license-file = "LICENSE"
+readme = "README.md"
 categories = []
 keywords = []
-authors = ["Tiago Marques"]
+repository = "https://github.com/timarques/european-choice"
 
 [package.metadata]
-id = "pt.timarques.eu_alternatives"
-title = "European Alternatives"
-prefix = "/pt/timarques/eu_alternatives"
+id = "pt.timarques.EuropeanChoice"
+title = "European Choice"
+prefix = "/pt/timarques/european_choice"
+author = "Tiago Marques"
 
 [dependencies]
-adw = { version = "0.8.0", package = "libadwaita", features = ["v1_7"] }
+adw = { version = "0.8.0", package = "libadwaita", features = ["v1_6"] }
 anyhow = { version = "1.0.98", features = ["backtrace"] }
-gtk = { package = "gtk4", version = "0.10.0", features = ["v4_8"] }
-phf = { version = "0.12.1" }
+gtk = { package = "gtk4", version = "0.10.0", features = ["v4_10"] }
+phf = "0.12.1"
 glib = "0.21.1"
 heck = "0.5.0"
-const-str = { version = "0.7.0", features = ["case"] }
 
 [build-dependencies]
 glib-build-tools = "0.21.0"
-scraper = "0.23.1"
-phf = { version = "0.12.1" }
+phf = "0.12.1"
 phf_codegen = "0.12.1"
+heck = "0.5.0"
+scraper = { version = "0.23.1", default-features = false }
 anyhow = { version = "1.0.98", features = ["backtrace"] }
 minreq = { version = "2.14.0", features = ["https"] }
 toml = { version = "0.8.22", default-features = false, features = ["parse"] }
-vtracer = "0.6.3"
-image = "0.25.6"
-md5 = "0.8.0"
-heck = "0.5.0"
-const-str = { version = "0.7.0", features = ["case"] }
-regex = "1.11.2"
+image = { version = "0.25.6", default-features = false, features = ["webp", "png"] }
+regex = { version = "1.11.2", default-features = false, features = ["unicode-perl"] }
+resvg = { version = "0.45.1", default-features = false }
+
+[target."cfg(windows)".build-dependencies]
+winres = "0.1"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(runtime)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(runtime)', 'cfg(schemas_installed)'] }
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+
+[profile.release]
+lto = true
+panic = "abort"
+opt-level = 3

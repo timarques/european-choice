@@ -1,0 +1,24 @@
+.icon-white {
+    -gtk-icon-filter: brightness(0) invert(1);
+}
+
+.sidebar-search-row entry, .sidebar-country-row dropdown > button, .sidebar-country-row dropdown > button * {
+  border: none; 
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+list.boxed-list-separate > row:not(:focus) {
+  background-color: var(--card-bg-color);
+}
+
+list.boxed-list-separate > row.active {
+  background-color: var(--window-bg-color);
+  color: var(--window-fg-color);
+}
+
+image.product-page-logo, image.overview-product-row-logo {
+  background-color: var(--window-fg-color);
+  padding: 6px;
+}

@@ -1,19 +1,19 @@
-use std::path::{Path, PathBuf};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use phf_codegen::Map;
 use regex::Regex;
+use scraper::{ElementRef, Html, Selector};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
+use std::fmt::{Debug, Write};
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use scraper::{Html, Selector};
 
 include!("src/models/mod.rs");
 
 const BASE_URL: &str = "https://european-alternatives.eu";
 const RESOURCES_FILE_NAME: &str = "compiled.gresources";
-const UI_XML: &str = include_str!("resources/ui.xml");
+const UI_XML: &str = include_str!("data/ui.xml");
 const MANIFEST_TOML: &str = include_str!("Cargo.toml");
-const RESOURCES_XML: &str = include_str!("resources/resources.gresource.xml.in");
+const RESOURCES_XML: &str = include_str!("data/resources.xml.in");
 
 // ===== TRAITS =====
 
@@ -42,51 +42,64 @@ where
 
 // ===== BUILD CONFIGURATION =====
 
-struct BuildConfiguration {
+struct Paths {
+    data_dir: PathBuf,
+    ui_file: PathBuf,
+    style_file: PathBuf,
+    icon_file: PathBuf,
+
     output_dir: PathBuf,
-    icons_dir: PathBuf,
-    resources_dir: PathBuf,
-    resources_ui_file: PathBuf,
-    catalog_file: PathBuf,
-    icons_xml_file: PathBuf,
-    templates_xml_file: PathBuf,
-    resources_xml_file: PathBuf,
-    compiled_resources_file: PathBuf,
+    output_icons_dir: PathBuf,
+    output_catalog_file: PathBuf,
+    output_resources_file: PathBuf,
+    output_icons_file: PathBuf,
+    output_templates_file: PathBuf,
+    output_resources_compiled_file: PathBuf,
 }
 
-impl BuildConfiguration {
-    fn new() -> Result<Self> {
+impl Paths {
+    fn new() -> Self {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let resources_dir = root.join("resources");
-        let resources_ui_file = resources_dir.join("ui.xml");
-        let output_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-        let icons_dir = output_dir.join("icons");
-        let catalog_file = output_dir.join("catalog.rs");
-        let resources_xml_file = output_dir.join("resources.xml");
-        let icons_xml_file = output_dir.join("icons.xml");
-        let templates_xml_file = output_dir.join("templates.xml");
-        let compiled_resources_file = output_dir.join(RESOURCES_FILE_NAME);
+        let data_dir = root.join("data");
+        let ui_file = data_dir.join("ui.xml");
+        let style_file = data_dir.join("style.css");
+        let icon_file = if cfg!(windows) {
+            data_dir.join("icon.ico")
+        } else {
+            data_dir.join("icon.svg")
+        };
 
-        std::fs::create_dir_all(&icons_dir)?;
+        let output_dir = PathBuf::from(
+            std::env::var("OUTPUT_DIR").unwrap_or_else(|_| std::env::var("OUT_DIR").unwrap()),
+        );
+        let output_icons_dir = output_dir.join("icons");
+        let output_catalog_file = output_dir.join("catalog.rs");
+        let output_resources_file = output_dir.join("resources.xml");
+        let output_icons_file = output_dir.join("icons.xml");
+        let output_templates_file = output_dir.join("templates.xml");
+        let output_resources_compiled_file = output_dir.join(RESOURCES_FILE_NAME);
 
-        Ok(Self {
+        Self {
+            data_dir,
+            ui_file,
+            style_file,
+            icon_file,
+
             output_dir,
-            resources_dir,
-            resources_ui_file,
-            icons_dir,
-            icons_xml_file,
-            templates_xml_file,
-            catalog_file,
-            resources_xml_file,
-            compiled_resources_file,
-        })
+            output_icons_dir,
+            output_catalog_file,
+            output_resources_file,
+            output_icons_file,
+            output_templates_file,
+            output_resources_compiled_file,
+        }
     }
 }
 
 // ===== APPLICATION METADATA =====
 
 #[allow(dead_code)]
-struct ApplicationMetadata {
+struct Metadata {
     name: &'static str,
     description: &'static str,
     version: &'static str,
@@ -98,25 +111,24 @@ struct ApplicationMetadata {
     keywords: Vec<String>,
 }
 
-impl ApplicationMetadata {
+impl Metadata {
     fn extract_from_cargo() -> Result<Self> {
         let name = env!("CARGO_PKG_NAME");
         let description = env!("CARGO_PKG_DESCRIPTION");
         let version = env!("CARGO_PKG_VERSION");
         let authors = env!("CARGO_PKG_AUTHORS")
             .split(':')
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
 
-        let manifest: toml::Value = toml::from_str(MANIFEST_TOML)
-            .context("Failed to parse Cargo.toml")?;
-        
-        let package = manifest.get("package")
+        let manifest: toml::Value =
+            toml::from_str(MANIFEST_TOML).context("Failed to parse Cargo.toml")?;
+        let package = manifest
+            .get("package")
             .context("Missing [package] section in Cargo.toml")?;
-        
-        let metadata = package.get("metadata")
+        let metadata = package
+            .get("metadata")
             .context("Missing [package.metadata] section in Cargo.toml")?;
-        
         let categories = Self::extract_string_array(package, "categories")?;
         let keywords = Self::extract_string_array(package, "keywords")?;
         let id = Self::extract_string(metadata, "id")?;
@@ -137,9 +149,10 @@ impl ApplicationMetadata {
     }
 
     fn extract_string(value: &toml::Value, key: &str) -> Result<String> {
-        value.get(key)
+        value
+            .get(key)
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .context(format!("Key '{key}' is missing or not a string"))
     }
 
@@ -150,12 +163,13 @@ impl ApplicationMetadata {
             .as_array()
             .context(format!("Key '{key}' is not an array"))?;
 
-        array.iter()
+        array
+            .iter()
             .enumerate()
             .map(|(i, v)| {
-                v.as_str()
-                    .map(|s| s.to_string())
-                    .context(format!("Element at index {i} in key '{key}' is not a string"))
+                v.as_str().map(std::string::ToString::to_string).context(format!(
+                    "Element at index {i} in key '{key}' is not a string"
+                ))
             })
             .collect()
     }
@@ -175,13 +189,18 @@ impl HttpClient {
                 if response.status_code == 200 {
                     Ok(response)
                 } else {
-                    bail!("HTTP error {status} from {url}", status = response.status_code)
+                    bail!(
+                        "HTTP error {status} from {url}",
+                        status = response.status_code
+                    )
                 }
             })
     }
 
     fn fetch_text(url: &str) -> Result<String> {
-        Ok(Self::send_request(url)?.as_str().map(|s| s.to_string())?)
+        Ok(Self::send_request(url)?
+            .as_str()
+            .map(std::string::ToString::to_string)?)
     }
 
     fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
@@ -198,27 +217,30 @@ impl HttpClient {
 struct DocumentSelectors {
     heading: Selector,
     first_paragraph: Selector,
+    title_tag: Selector,
     category_link: Selector,
     category_icon: Selector,
+    product_prose: Selector,
     product_logo: Selector,
     product_link: Selector,
-    product_country_flag: Selector,
     product_country: Selector,
+    product_other_websites: Selector,
     product_website: Selector,
 }
 
-static DOCUMENT_SELECTORS: LazyLock<DocumentSelectors> = LazyLock::new(|| {
-    DocumentSelectors {
-        heading: Selector::parse("h1").unwrap(),
-        first_paragraph: Selector::parse(".prose > p:first-child").unwrap(),
-        category_link: Selector::parse("a[href*='/category/']").unwrap(),
-        category_icon: Selector::parse("img[src*='/categoryLogo/']").unwrap(),
-        product_logo: Selector::parse("img[src*='/productLogo/']").unwrap(),
-        product_link: Selector::parse("div > a[href*='/product/']").unwrap(),
-        product_country_flag: Selector::parse("img[src*='countryFlags']").unwrap(),
-        product_country: Selector::parse("img[src*='countryFlags'] + span").unwrap(),
-        product_website: Selector::parse(
-            r#"a[href^="http"]:not([href*="european-alternatives.eu"]):not(:where(
+static DOCUMENT_SELECTORS: LazyLock<DocumentSelectors> = LazyLock::new(|| DocumentSelectors {
+    heading: Selector::parse("h1").unwrap(),
+    first_paragraph: Selector::parse(".prose > p:first-child").unwrap(),
+    title_tag: Selector::parse("title").unwrap(),
+    category_link: Selector::parse("a[href*='/category/']").unwrap(),
+    category_icon: Selector::parse("img[src*='/categoryLogo/']").unwrap(),
+    product_prose: Selector::parse(".prose").unwrap(),
+    product_logo: Selector::parse("img[src*='/productLogo/']").unwrap(),
+    product_link: Selector::parse("div > a[href*='/product/']").unwrap(),
+    product_country: Selector::parse("img[src*='countryFlags'] + span").unwrap(),
+    product_other_websites: Selector::parse("article .items-center a").unwrap(),
+    product_website: Selector::parse(
+        r#"a[href^="http"]:not([href*="european-alternatives.eu"]):not(:where(
                 [href*="facebook.com"], [href*="fb.com"],
                 [href*="twitter.com"], [href*="x.com"],
                 [href*="linkedin.com"], [href*="instagram.com"],
@@ -228,9 +250,9 @@ static DOCUMENT_SELECTORS: LazyLock<DocumentSelectors> = LazyLock::new(|| {
                 [href*="pinterest.com"], [href*="reddit.com"],
                 [href*="snapchat.com"], [href*="discord.com"],
                 [href*="telegram.org"]
-            )) span"#
-        ).unwrap(),
-    }
+            )) span"#,
+    )
+    .unwrap(),
 });
 
 // ===== CONCURRENT EXECUTOR =====
@@ -238,28 +260,73 @@ static DOCUMENT_SELECTORS: LazyLock<DocumentSelectors> = LazyLock::new(|| {
 struct ConcurrentExecutor;
 
 impl ConcurrentExecutor {
-    fn execute_and_collect<T, F, R>(items: Vec<T>, worker: F) -> Result<(Vec<R>, Vec<Icon>)>
+    fn is_single_threaded() -> bool {
+        std::env::var("SINGLE_THREAD_BUILD")
+            .map(|value| value.to_lowercase() == "true")
+            .unwrap_or(false)
+    }
+
+    fn execute_and_collect<I, T, F, R>(items: I, worker: F) -> Result<(Vec<R>, Vec<Icon>)>
     where
+        I: IntoIterator<Item = T>,
         T: Send + 'static,
         F: Fn(T) -> Result<(R, Vec<Icon>)> + Send + Sync + Copy + 'static,
         R: Send + 'static,
     {
-        let handles: Vec<_> = items
-            .into_iter()
-            .map(|item| std::thread::spawn(move || worker(item)))
-            .collect();
+        let items: Vec<T> = items.into_iter().collect();
+        let mut results = Vec::with_capacity(items.len());
+        let mut all_icons = Vec::with_capacity(items.len());
 
-        let mut results = Vec::new();
-        let mut all_icons = Vec::new();
+        if Self::is_single_threaded() {
+            for item in items {
+                let (result, icons) = worker(item)?;
+                results.push(result);
+                all_icons.extend(icons);
+            }
+        } else {
+            let handles = items
+                .into_iter()
+                .map(|item| std::thread::spawn(move || worker(item)))
+                .collect::<Vec<_>>();
 
-        for handle in handles {
-            let (result, icons) = handle.join()
-                .map_err(|error| anyhow::anyhow!("Thread panicked: {error:?}"))??;
-            results.push(result);
-            all_icons.extend(icons);
+            for handle in handles {
+                let (result, icons) = handle
+                    .join()
+                    .map_err(|error| anyhow::anyhow!("Thread panicked: {error:?}"))??;
+                results.push(result);
+                all_icons.extend(icons);
+            }
         }
 
         Ok((results, all_icons))
+    }
+
+    fn execute_parallel<I, T, F>(items: I, worker: F) -> Result<()>
+    where
+        I: IntoIterator<Item = T>,
+        T: Send + 'static,
+        F: Fn(T) -> Result<()> + Send + Sync + Copy + 'static,
+    {
+        let items: Vec<T> = items.into_iter().collect();
+
+        if Self::is_single_threaded() {
+            for item in items {
+                worker(item)?;
+            }
+        } else {
+            let handles = items
+                .into_iter()
+                .map(|item| std::thread::spawn(move || worker(item)))
+                .collect::<Vec<_>>();
+
+            for handle in handles {
+                handle
+                    .join()
+                    .map_err(|error| anyhow::anyhow!("Thread panicked: {error:?}"))??;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -277,7 +344,9 @@ impl UrlBuilder {
     }
 
     fn extract_slug_from_href(href: &str) -> Option<String> {
-        href.split('/').last().map(|s| s.to_string())
+        href.split('/')
+            .next_back()
+            .map(std::string::ToString::to_string)
     }
 }
 
@@ -287,67 +356,18 @@ struct FileSystemHelper;
 
 impl FileSystemHelper {
     fn is_source_newer_than_target(source: &Path, target: &Path) -> Result<bool> {
-        if !target.exists() {
-            return Ok(false);
-        }
-
         let source_time = source.metadata()?.modified()?;
         let target_time = target.metadata()?.modified()?;
-        
-        Ok(source_time < target_time)
+
+        Ok(source_time > target_time)
     }
 
     fn target_exists_and_is_newer(source: &Path, target: &Path) -> Result<bool> {
-        Ok(target.exists() && Self::is_source_newer_than_target(source, target)?)
-    }
-}
-
-// ===== URL DISCOVERY =====
-
-struct UrlDiscovery;
-
-impl UrlDiscovery {
-    fn discover_category_urls() -> Result<Vec<(String, String)>> {
-        let document = HttpClient::fetch_html(&UrlBuilder::build_categories_index_url())?;
-        let hrefs = DocumentExtractor::collect_unique_href_values(&document, &DOCUMENT_SELECTORS.category_link);
-
-        let results = hrefs
-            .into_iter()
-            .filter_map(|href| {
-                UrlBuilder::extract_slug_from_href(&href)
-                    .map(|slug| (href, slug))
-            })
-            .collect();
-
-        Ok(results)
-    }
-
-    fn discover_product_urls(categories: &[Category]) -> Result<HashMap<String, Vec<String>>> {
-        let mut product_urls = HashMap::<String, Vec<String>>::new();
-        
-        for category in categories {
-            Self::collect_product_urls_for_category(category, &mut product_urls)?;
-        }
-        
-        Ok(product_urls)
-    }
-
-    fn collect_product_urls_for_category(
-        category: &Category, 
-        product_urls: &mut HashMap<String, Vec<String>>
-    ) -> Result<()> {
-        let category_url = UrlBuilder::build_category_url(&category.slug);
-        let document = HttpClient::fetch_html(&category_url)?;
-
-        for element in document.select(&DOCUMENT_SELECTORS.product_link) {
-            if let Some(url) = element.value().attr("href") {
-                product_urls.entry(url.to_string())
-                    .or_default()
-                    .push(category.slug.to_string());
-            }
-        }
-
-        Ok(())
+        Ok(
+            source.exists()
+                && target.exists()
+                && Self::is_source_newer_than_target(source, target)?,
+        )
     }
 }
 
@@ -357,25 +377,37 @@ struct DocumentExtractor;
 
 impl DocumentExtractor {
     fn extract_text(document: &Html, selector: &Selector, context: &str) -> Result<String> {
-        document.select(selector)
+        document
+            .select(selector)
             .next()
             .map(|element| element.text().collect::<String>().trim().to_string())
-            .context(format!("{} not found", context))
+            .context(format!("{context} not found"))
     }
 
-    fn extract_attribute(document: &Html, selector: &Selector, attribute: &str, context: &str) -> Result<String> {
-        document.select(selector)
+    fn extract_attribute(
+        document: &Html,
+        selector: &Selector,
+        attribute: &str,
+        context: &str,
+    ) -> Result<String> {
+        document
+            .select(selector)
             .next()
             .and_then(|element| element.value().attr(attribute))
-            .map(|value| value.to_string())
-            .context(format!("{} not found", context))
+            .map(std::string::ToString::to_string)
+            .context(format!("{context} not found"))
     }
 
-    fn extract_optional_attribute(document: &Html, selector: &Selector, attribute: &str) -> Option<String> {
-        document.select(selector)
+    fn extract_optional_attribute(
+        document: &Html,
+        selector: &Selector,
+        attribute: &str,
+    ) -> Option<String> {
+        document
+            .select(selector)
             .next()
             .and_then(|element| element.value().attr(attribute))
-            .map(|value| value.to_string())
+            .map(std::string::ToString::to_string)
     }
 
     fn collect_unique_href_values(document: &Html, selector: &Selector) -> Vec<String> {
@@ -400,25 +432,67 @@ struct CategoryExtractor;
 
 impl CategoryExtractor {
     fn extract_all_categories() -> Result<(Vec<Category>, Vec<Icon>)> {
-        let category_urls = UrlDiscovery::discover_category_urls()?;
-        
-        ConcurrentExecutor::execute_and_collect(
-            category_urls,
-            |(url, slug)| Self::extract_single_category(&url, slug).map(|(cat, icon)| (cat, vec![icon]))
-        )
+        let category_urls = Self::discover_category_urls()?;
+
+        ConcurrentExecutor::execute_and_collect(category_urls, |(url, slug)| {
+            Self::extract_single_category(&url, slug).map(|(cat, icon)| (cat, vec![icon]))
+        })
+    }
+
+    fn discover_category_urls() -> Result<HashMap<String, String>> {
+        let document = HttpClient::fetch_html(&UrlBuilder::build_categories_index_url())?;
+        let hrefs = DocumentExtractor::collect_unique_href_values(
+            &document,
+            &DOCUMENT_SELECTORS.category_link,
+        );
+        let results = hrefs
+            .into_iter()
+            .filter_map(|href| UrlBuilder::extract_slug_from_href(&href).map(|slug| (href, slug)))
+            .collect();
+
+        Ok(results)
+    }
+
+    fn remove_european_prefix(name: &str) -> Option<String> {
+        if name.len() >= 10
+            && name.chars().take(8).collect::<String>().to_lowercase() == "european"
+            && name.chars().nth(8) == Some(' ')
+        {
+            let remaining_chars = name.chars().skip(9).collect::<Vec<char>>();
+            if let Some(first_remaining_char) = remaining_chars.first() {
+                return Some(format!(
+                    "{}{}",
+                    first_remaining_char.to_uppercase(),
+                    remaining_chars.iter().skip(1).collect::<String>()
+                ));
+            }
+        }
+        None
     }
 
     fn extract_single_category(url: &str, slug: String) -> Result<(Category, Icon)> {
         let document = HttpClient::fetch_html(url)?;
-        
-        let name = DocumentExtractor::extract_text(&document, &DOCUMENT_SELECTORS.heading, "Category name")?;
-        let description = DocumentExtractor::extract_text(&document, &DOCUMENT_SELECTORS.first_paragraph, "Category description")?;
+        let name = DocumentExtractor::extract_text(
+            &document,
+            &DOCUMENT_SELECTORS.heading,
+            "Category name",
+        )?;
+        let name = Self::remove_european_prefix(&name).unwrap_or(name);
+        let description = DocumentExtractor::extract_text(
+            &document,
+            &DOCUMENT_SELECTORS.first_paragraph,
+            "Category description",
+        )?;
+        let summary = description
+            .split('.')
+            .next()
+            .map_or_else(|| description.clone(), |s| format!("{s}."));
         let icon = Self::extract_category_icon(&document, &name)?;
-
         let category = Category {
             slug,
             name,
             description,
+            summary,
             icon: icon.name.clone(),
         };
 
@@ -427,10 +501,10 @@ impl CategoryExtractor {
 
     fn extract_category_icon(document: &Html, name: &str) -> Result<Icon> {
         let icon_url = DocumentExtractor::extract_attribute(
-            document, 
-            &DOCUMENT_SELECTORS.category_icon, 
+            document,
+            &DOCUMENT_SELECTORS.category_icon,
             "src",
-            "Category icon"
+            "Category icon",
         )?;
 
         Icon::from_url(icon_url, name)
@@ -443,100 +517,182 @@ struct ProductExtractor;
 
 impl ProductExtractor {
     fn extract_all_products(categories: &[Category]) -> Result<(Vec<Product>, Vec<Icon>)> {
-        let product_urls = UrlDiscovery::discover_product_urls(categories)?;
-        
-        ConcurrentExecutor::execute_and_collect(
-            product_urls.into_iter().collect::<Vec<_>>(),
-            |(url, categories)| Self::extract_single_product_with_icons(&url, categories)
-        )
+        let product_urls = Self::discover_product_urls(categories)?;
+        ConcurrentExecutor::execute_and_collect(product_urls, |(url, categories)| {
+            Self::extract_single_product_with_icons(&url, categories)
+        })
     }
 
-    fn extract_single_product_with_icons(url: &str, categories: Vec<String>) -> Result<(Product, Vec<Icon>)> {
+    fn discover_product_urls(categories: &[Category]) -> Result<HashMap<String, HashSet<String>>> {
+        let mut product_urls = HashMap::new();
+
+        for category in categories {
+            Self::collect_product_urls_for_category(&mut product_urls, category)?;
+        }
+
+        Ok(product_urls)
+    }
+
+    fn collect_product_urls_for_category(
+        product_urls: &mut HashMap<String, HashSet<String>>,
+        category: &Category,
+    ) -> Result<()> {
+        let category_url = UrlBuilder::build_category_url(&category.slug);
+        let document = HttpClient::fetch_html(&category_url)?;
+
+        for element in document.select(&DOCUMENT_SELECTORS.product_link) {
+            if let Some(url) = element.value().attr("href") {
+                let category_list = product_urls.entry(url.to_string()).or_default();
+
+                category_list.insert(category.slug.to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    fn extract_single_product_with_icons(
+        url: &str,
+        categories: HashSet<String>,
+    ) -> Result<(Product, Vec<Icon>)> {
         let document = HttpClient::fetch_html(url)?;
-        let product = Self::extract_product_data(&document, categories)?;
+        let product = Self::extract_product_data(&document, categories, url)?;
         let icons = Self::extract_product_icons(&document, &product)?;
 
         Ok((product, icons))
     }
 
-    fn extract_product_data(document: &Html, categories: Vec<String>) -> Result<Product> {
-        let name = DocumentExtractor::extract_text(document, &DOCUMENT_SELECTORS.heading, "Product name")?;
-        let description = DocumentExtractor::extract_text(document, &DOCUMENT_SELECTORS.first_paragraph, "Product description")?;
-        
-        let website = Self::extract_product_website(document);
+    fn extract_product_data(
+        document: &Html,
+        categories: HashSet<String>,
+        url: &str,
+    ) -> Result<Product> {
+        let name =
+            DocumentExtractor::extract_text(document, &DOCUMENT_SELECTORS.heading, "Product name")?;
+        let name = heck::AsTitleCase(name).to_string();
+        let source_website = url.to_string();
+        let (description, summary) = Self::extract_description_and_summary(document)?;
         let country = Self::extract_product_country(document);
         let logo = Self::extract_product_logo_name(document, &name)?;
+        let categories = categories.into_iter().collect();
+        let websites = Self::extract_websites(document, &source_website);
 
         Ok(Product {
-            logo,
             categories,
+            logo,
             name,
-            country,
-            website,
             description,
+            summary,
+            country,
+            websites,
         })
     }
 
+    fn extract_description_and_summary(document: &Html) -> Result<(String, String)> {
+        let description_element = document
+            .select(&DOCUMENT_SELECTORS.product_prose)
+            .next()
+            .context("Product description not found")?;
+
+        let mut description = String::new();
+        for child in description_element.children() {
+            let Some(child_element) = child.value().as_element() else {
+                continue;
+            };
+            let element_ref = ElementRef::wrap(child).expect("Child is an element");
+            let text = element_ref.text().collect::<String>();
+            let trimmed_text = text.trim();
+
+            match child_element.name() {
+                "p" if description.is_empty() => description.push_str(trimmed_text),
+                "p" => write!(description, "\n\n{trimmed_text}").unwrap(),
+                _ => break,
+            }
+        }
+
+        let summary = Self::generate_summary(&description);
+
+        Ok((description, summary))
+    }
+
+    fn generate_summary(description: &str) -> String {
+        let mut summary = String::new();
+        let mut sentence_count = 0;
+
+        for sentence in description.replace("\n\n", "\n").split('.') {
+            let trimmed_sentence = sentence.trim();
+            if !trimmed_sentence.is_empty() && sentence_count < 2 {
+                write!(summary, "{trimmed_sentence}.").unwrap();
+                sentence_count += 1;
+
+                if sentence_count == 2 {
+                    break;
+                }
+            }
+        }
+
+        summary
+    }
+
+    fn extract_websites(document: &Html, source: &str) -> Vec<(String, String)> {
+        let company_website_option = Self::extract_product_website(document);
+        let mut websites = company_website_option.map_or_else(
+            || vec![(String::from("European Alternatives"), source.to_string())],
+            |oficial_website| {
+                vec![
+                    (String::from("Company"), oficial_website),
+                    (String::from("European Alternatives"), source.to_string()),
+                ]
+            },
+        );
+
+        for element in document.select(&DOCUMENT_SELECTORS.product_other_websites) {
+            if let Some(href) = element.value().attr("href")
+                && let Some(title) = element.select(&DOCUMENT_SELECTORS.title_tag).next()
+            {
+                let title = title.text().collect::<String>().trim().to_string();
+                websites.push((title, href.to_string().trim().to_string()));
+            }
+        }
+
+        websites
+    }
+
     fn extract_product_website(document: &Html) -> Option<String> {
-        document.select(&DOCUMENT_SELECTORS.product_website)
+        document
+            .select(&DOCUMENT_SELECTORS.product_website)
             .next()
             .and_then(|span| span.parent())
             .and_then(|anchor| anchor.value().as_element())
             .and_then(|anchor| anchor.attr("href"))
-            .map(|href| href.to_string())
+            .map(std::string::ToString::to_string)
     }
 
     fn extract_product_country(document: &Html) -> Option<Country> {
-        document.select(&DOCUMENT_SELECTORS.product_country)
+        document
+            .select(&DOCUMENT_SELECTORS.product_country)
             .next()
             .and_then(|span| Country::parse(span.text().collect::<String>().trim()))
     }
 
-    fn extract_product_logo_name(document: &Html, product_name: &str) -> Result<Option<String>> {
-        Ok(Self::extract_product_logo_icon(document, product_name)?
-            .map(|icon| icon.name))
+    fn extract_product_logo_name(document: &Html, product_name: &str) -> Result<String> {
+        Self::extract_product_logo_icon(document, product_name).map(|icon| icon.name)
     }
 
     fn extract_product_icons(document: &Html, product: &Product) -> Result<Vec<Icon>> {
-        let mut icons = Vec::new();
-
-        if let Some(logo_icon) = Self::extract_product_logo_icon(document, &product.name)? {
-            icons.push(logo_icon);
-        }
-
-        if let Some(country) = product.country {
-            if let Some(flag_icon) = Self::extract_country_flag_icon(document, country)? {
-                icons.push(flag_icon);
-            }
-        }
-
-        Ok(icons)
+        let icon = Self::extract_product_logo_icon(document, &product.name)?;
+        Ok(vec![icon])
     }
 
-    fn extract_product_logo_icon(document: &Html, name: &str) -> Result<Option<Icon>> {
-        let logo_url = DocumentExtractor::extract_optional_attribute(
-            document, 
-            &DOCUMENT_SELECTORS.product_logo, 
-            "src"
-        );
+    fn extract_product_logo_icon(document: &Html, name: &str) -> Result<Icon> {
+        let url = DocumentExtractor::extract_optional_attribute(
+            document,
+            &DOCUMENT_SELECTORS.product_logo,
+            "src",
+        )
+        .context("Product logo not found")?;
 
-        match logo_url {
-            Some(url) => Ok(Some(Icon::from_url(url, name)?)),
-            None => Ok(None),
-        }
-    }
-
-    fn extract_country_flag_icon(document: &Html, country: Country) -> Result<Option<Icon>> {
-        let flag_url = DocumentExtractor::extract_optional_attribute(
-            document, 
-            &DOCUMENT_SELECTORS.product_country_flag, 
-            "src"
-        );
-
-        match flag_url {
-            Some(url) => Ok(Some(Icon::from_url(url, country.icon())?)),
-            None => Ok(None),
-        }
+        Icon::from_url(url, name)
     }
 }
 
@@ -548,20 +704,35 @@ impl CatalogExtractor {
     fn extract_complete_catalog() -> Result<(Vec<Category>, Vec<Product>, Vec<Icon>)> {
         let (categories, category_icons) = CategoryExtractor::extract_all_categories()?;
         let (products, product_icons) = ProductExtractor::extract_all_products(&categories)?;
-        
-        let all_icons = Self::combine_icon_collections(category_icons, product_icons);
-        
-        Ok((categories, products, all_icons))
+        let country_icons = Self::extract_country_flags_icons()?;
+
+        let icons = category_icons
+            .into_iter()
+            .chain(product_icons)
+            .chain(country_icons)
+            .collect::<Vec<_>>();
+
+        Ok((categories, products, icons))
     }
 
-    fn combine_icon_collections(mut category_icons: Vec<Icon>, product_icons: Vec<Icon>) -> Vec<Icon> {
-        category_icons.extend(product_icons);
-        category_icons
+    fn extract_country_flags_icons() -> Result<Vec<Icon>> {
+        let mut icons = Vec::with_capacity(Country::COUNT);
+        for country in Country::all() {
+            let flag_url = format!(
+                "https://cdn.european-alternatives.eu/countryFlags/4x3/{code}.svg",
+                code = country.code()
+            );
+            let icon = Icon::from_url(flag_url, country.slug())?;
+            icons.push(icon);
+        }
+
+        Ok(icons)
     }
 }
 
 // ===== CATALOG CODE GENERATION =====
 
+#[allow(clippy::struct_field_names)]
 struct CatalogIndexMaps {
     category_slug_to_index: HashMap<String, usize>,
     product_name_to_index: HashMap<String, usize>,
@@ -610,16 +781,16 @@ impl CatalogIndexMaps {
         categories_count: usize,
     ) -> Vec<Vec<usize>> {
         let mut products_by_category = vec![Vec::new(); categories_count];
-        
+
         for (product_index, product) in products.iter().enumerate() {
             Self::assign_product_to_categories(
-                product, 
-                product_index, 
-                category_slug_to_index, 
-                &mut products_by_category
+                product,
+                product_index,
+                category_slug_to_index,
+                &mut products_by_category,
             );
         }
-        
+
         products_by_category
     }
 
@@ -638,11 +809,11 @@ impl CatalogIndexMaps {
 
     fn build_products_by_country_index(products: &[Product]) -> Vec<Vec<usize>> {
         let mut products_by_country = vec![Vec::new(); Country::COUNT];
-        
+
         for (product_index, product) in products.iter().enumerate() {
             Self::assign_product_to_country(product, product_index, &mut products_by_country);
         }
-        
+
         products_by_country
     }
 
@@ -663,8 +834,9 @@ struct CatalogCodeBuilder;
 
 impl CatalogCodeBuilder {
     fn format_indexed_vector_collection<T: Debug>(vectors: &[Vec<T>]) -> String {
-        let formatted_vectors = vectors.iter()
-            .map(|vector| format!("&{:?}", vector))
+        let formatted_vectors = vectors
+            .iter()
+            .map(|vector| format!("&{vector:?}"))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -676,14 +848,15 @@ impl CatalogCodeBuilder {
         for (key, value) in map {
             phf_builder.entry(key.as_ref(), value.to_string());
         }
-        
+
         phf_builder.build().to_string()
     }
 
     fn format_optional_country_field(country: Option<Country>) -> String {
-        country
-            .map(|country| format!("Some(Country::{country:?})"))
-            .unwrap_or_else(|| "None".to_string())
+        country.map_or_else(
+            || "None".to_string(),
+            |country| format!("Some(crate::models::Country::{country:?})"),
+        )
     }
 
     fn format_category_indices_list(
@@ -699,14 +872,16 @@ impl CatalogCodeBuilder {
 
     fn format_category_struct(category: &Category) -> String {
         format!(
-            "Category {{
+            "crate::models::Category {{
                 slug: {slug:?},
                 name: {name:?},
+                summary: {summary:?},
                 description: {description:?},
                 icon: {icon:?}
             }}",
             slug = category.slug,
             name = category.name,
+            summary = category.summary,
             description = category.description,
             icon = category.icon
         )
@@ -715,35 +890,39 @@ impl CatalogCodeBuilder {
     fn format_product_struct(index_maps: &CatalogIndexMaps, product: &Product) -> String {
         let country = Self::format_optional_country_field(product.country);
         let categories = Self::format_category_indices_list(
-            &product.categories, 
-            &index_maps.category_slug_to_index
+            &product.categories,
+            &index_maps.category_slug_to_index,
         );
 
         format!(
-            "Product {{
+            "crate::models::Product {{
                 categories: &[{categories}],
                 name: {name:?},
                 country: {country},
-                website: {website:?},
                 description: {description:?},
-                logo: {logo:?}
+                summary: {summary:?},
+                logo: {logo:?},
+                websites: &{websites:?}
             }}",
             name = product.name,
-            website = product.website,
             description = product.description,
-            logo = product.logo
+            summary = product.summary,
+            logo = product.logo,
+            websites = product.websites,
         )
     }
 
     fn format_categories_array(categories: &[Category]) -> String {
-        categories.iter()
+        categories
+            .iter()
             .map(Self::format_category_struct)
             .collect::<Vec<_>>()
             .join(", ")
     }
 
     fn format_products_array(products: &[Product], index_maps: &CatalogIndexMaps) -> String {
-        products.iter()
+        products
+            .iter()
             .map(|product| Self::format_product_struct(index_maps, product))
             .collect::<Vec<_>>()
             .join(", ")
@@ -756,13 +935,15 @@ impl CatalogCodeBuilder {
     ) -> String {
         let categories_map = Self::format_phf_hash_map(&index_maps.category_slug_to_index);
         let products_map = Self::format_phf_hash_map(&index_maps.product_name_to_index);
-        let category_products = Self::format_indexed_vector_collection(&index_maps.products_by_category_index);
-        let country_products = Self::format_indexed_vector_collection(&index_maps.products_by_country_index);
+        let category_products =
+            Self::format_indexed_vector_collection(&index_maps.products_by_category_index);
+        let country_products =
+            Self::format_indexed_vector_collection(&index_maps.products_by_country_index);
         let categories_array = Self::format_categories_array(categories);
         let products_array = Self::format_products_array(products, index_maps);
 
         format!(
-            "Catalog {{
+            "crate::models::Catalog {{
                 categories: &[{categories_array}],
                 products: &[{products_array}],
                 categories_map: {categories_map},
@@ -777,39 +958,44 @@ impl CatalogCodeBuilder {
 // ===== CATALOG PROCESSOR =====
 
 struct CatalogProcessor<'a> {
-    config: &'a BuildConfiguration,
+    paths: &'a Paths,
 }
 
 impl<'a> CatalogProcessor<'a> {
-    fn new(config: &'a BuildConfiguration) -> Self {
-        Self { config }
+    const fn new(paths: &'a Paths) -> Self {
+        Self { paths }
     }
 
-    fn process_catalog_data(&self) -> Result<Vec<Icon>> {
-        if self.should_use_cached_catalog()? {
-            Ok(Vec::new())
+    fn process_catalog_data(&self) -> Result<(Vec<Icon>, bool)> {
+        if self.should_use_cached_catalog() {
+            Ok((vec![], false))
         } else {
             self.regenerate_catalog_data()
         }
     }
 
-    fn should_use_cached_catalog(&self) -> Result<bool> {
-        Ok(self.config.catalog_file.exists())
+    fn should_use_cached_catalog(&self) -> bool {
+        self.paths.output_catalog_file.exists()
     }
 
-    fn regenerate_catalog_data(&self) -> Result<Vec<Icon>> {
+    fn regenerate_catalog_data(&self) -> Result<(Vec<Icon>, bool)> {
         let (categories, products, icons) = CatalogExtractor::extract_complete_catalog()?;
-        
+
         self.write_catalog_code_to_file(&categories, &products)?;
-        
-        Ok(icons)
+
+        Ok((icons, true))
     }
 
-    fn write_catalog_code_to_file(&self, categories: &[Category], products: &[Product]) -> Result<()> {
+    fn write_catalog_code_to_file(
+        &self,
+        categories: &[Category],
+        products: &[Product],
+    ) -> Result<()> {
         let index_maps = CatalogIndexMaps::build_from_catalog(categories, products);
-        let catalog_code = CatalogCodeBuilder::build_catalog_struct_code(categories, products, &index_maps);
+        let catalog_code =
+            CatalogCodeBuilder::build_catalog_struct_code(categories, products, &index_maps);
 
-        std::fs::write(&self.config.catalog_file, catalog_code)
+        std::fs::write(&self.paths.output_catalog_file, catalog_code)
             .context("Failed to write catalog file")
     }
 }
@@ -821,37 +1007,36 @@ struct Icon {
     url: String,
     filename: String,
     name: String,
-    is_svg_format: bool,
+    extension: String,
 }
 
 impl Icon {
     fn from_url(url: String, name: &str) -> Result<Self> {
         let name = heck::AsSnakeCase(name).to_string();
-        let filename = format!("{name}.svg");
         let extension = url
             .rsplit('.')
             .next()
             .context("Invalid icon URL")?
             .to_lowercase();
 
-        let is_svg_format = extension == "svg";
+        let final_extension = if extension == "svg" { "svg" } else { "png" };
+
+        let filename = format!("{name}.{final_extension}");
 
         Ok(Self {
             url,
-            name,
             filename,
-            is_svg_format,
+            name,
+            extension,
         })
     }
 
-    fn download_bytes(&self) -> Result<Vec<u8>> {
-        HttpClient::fetch_bytes(&self.url)
+    fn is_svg(&self) -> bool {
+        self.extension == "svg"
     }
 
-    fn save_to_path(&self, path: &Path) -> Result<()> {
-        let bytes = self.download_bytes()?;
-        std::fs::write(path, bytes)?;
-        Ok(())
+    fn is_png(&self) -> bool {
+        self.extension == "png"
     }
 }
 
@@ -863,7 +1048,7 @@ struct IconHarvester<'a> {
 
 impl<'a> IconHarvester<'a> {
     fn new() -> Self {
-        Self { 
+        Self {
             icon_registry: HashMap::new(),
         }
     }
@@ -876,40 +1061,48 @@ impl<'a> IconHarvester<'a> {
     }
 
     fn download_all_to_directory(&self, output_directory: &Path) -> Result<&Self> {
-        let download_handles: Vec<_> = self.icon_registry
+        let icons_to_download = self
+            .icon_registry
             .values()
-            .map(|&icon| {
-                let icon = icon.clone();
-                let path = output_directory.join(&icon.filename);
-                std::thread::spawn(move || Self::process_single_icon_download(icon, &path))
-            })
-            .collect();
+            .map(|&icon| (icon.clone(), output_directory.to_owned()))
+            .collect::<Vec<_>>();
 
-        for handle in download_handles {
-            handle.join().unwrap()?;
-        }
+        ConcurrentExecutor::execute_parallel(icons_to_download, |(icon, directory)| {
+            Self::download_icon_as_svg(&icon, &directory)
+        })?;
 
         Ok(self)
     }
 
-    fn process_single_icon_download(icon: Icon, path: &Path) -> Result<()> {
-        if icon.is_svg_format {
-            return icon.save_to_path(path);
+    fn download_icon_as_svg(icon: &Icon, directory: &Path) -> Result<()> {
+        let bytes = HttpClient::fetch_bytes(&icon.url)?;
+        let path = directory.join(&icon.filename);
+        if icon.is_svg() {
+            Self::normalize_svg_bytes(&path, &bytes)
+        } else {
+            Self::convert_image_to_png(icon, &path, &bytes)
+        }?;
+
+        Ok(())
+    }
+
+    fn normalize_svg_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+        let options = resvg::usvg::Options::default();
+        let write_options = resvg::usvg::WriteOptions::default();
+        let tree = resvg::usvg::Tree::from_data(bytes, &options)?;
+
+        let xml = tree.to_string(&write_options);
+        Ok(std::fs::write(path, xml)?)
+    }
+
+    fn convert_image_to_png(icon: &Icon, path: &Path, bytes: &[u8]) -> Result<()> {
+        if icon.is_png() {
+            std::fs::write(path, bytes)?;
+        } else {
+            let image = image::load_from_memory(bytes)?;
+            image.save_with_format(path, image::ImageFormat::Png)?;
         }
 
-        let bytes = icon.download_bytes()?;
-        let image = image::load_from_memory(&bytes)?;
-        let rgba = image.to_rgba8();
-        let vtracer_config = vtracer::Config::default();
-        let color_image = vtracer::ColorImage {
-            pixels: rgba.as_raw().to_vec(),
-            width: rgba.width() as usize,
-            height: rgba.height() as usize,
-        };
-        let svg_content = vtracer::convert(color_image, vtracer_config)
-            .map_err(|error| anyhow::anyhow!("vtracer error: {error}"))?;
-        
-        std::fs::write(path, svg_content.to_string())?;
         Ok(())
     }
 
@@ -917,10 +1110,17 @@ impl<'a> IconHarvester<'a> {
         self.icon_registry
             .values()
             .map(|icon| {
-                format!(
-                    "<file compressed=\"true\" preprocess=\"xml-stripblanks\" alias=\"{filename}\">{filename}</file>",
-                    filename = icon.filename
-                )
+                if icon.is_svg() {
+                    format!(
+                        "<file compressed=\"true\" preprocess=\"xml-stripblanks\" alias=\"{filename}\">{filename}</file>",
+                        filename = icon.filename
+                    )
+                } else {
+                    format!(
+                        "<file compressed=\"true\" alias=\"{filename}\">{filename}</file>",
+                        filename = icon.filename
+                    )
+                }
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -936,42 +1136,41 @@ impl<'a> IconHarvester<'a> {
 // ===== ICON PROCESSOR =====
 
 struct IconProcessor<'a> {
-    config: &'a BuildConfiguration,
+    paths: &'a Paths,
 }
 
 impl<'a> IconProcessor<'a> {
-    fn new(config: &'a BuildConfiguration) -> Self {
-        Self { config }
+    const fn new(paths: &'a Paths) -> Self {
+        Self { paths }
     }
 
-    fn process_icons(&self, icons: Vec<Icon>, catalog_data_regenerated: bool) -> Result<(String, bool)> {
-        if !catalog_data_regenerated && self.should_use_cached_icons() {
-            self.load_cached_icons_xml()
-        } else {
-            self.regenerate_icons_resources(icons)
-        }
-    }
-
-    fn should_use_cached_icons(&self) -> bool {
-        self.config.icons_xml_file.exists()
+    fn should_process_icons(&self, icons: &[Icon]) -> bool {
+        !icons.is_empty() || !self.paths.output_icons_file.exists()
     }
 
     fn load_cached_icons_xml(&self) -> Result<(String, bool)> {
-        let xml_content = std::fs::read_to_string(&self.config.icons_xml_file)?;
+        let xml_content = std::fs::read_to_string(&self.paths.output_icons_file)?;
         Ok((xml_content, false))
     }
 
-    fn regenerate_icons_resources(&self, icons: Vec<Icon>) -> Result<(String, bool)> {
-        if icons.is_empty() {
-            return Ok((String::new(), false));
-        }
+    fn generate_icons_xml(&self, icons: &[Icon]) -> Result<(String, bool)> {
+        std::fs::create_dir_all(&self.paths.output_icons_dir)?;
 
-        let xml_content = IconHarvester::new()
-            .register_icons(&icons)
-            .download_all_to_directory(&self.config.icons_dir)?
-            .save_resources_xml_to_file(&self.config.icons_xml_file)?;
+        let mut harvester = IconHarvester::new();
+        let xml_content = harvester
+            .register_icons(icons)
+            .download_all_to_directory(&self.paths.output_icons_dir)?
+            .save_resources_xml_to_file(&self.paths.output_icons_file)?;
 
         Ok((xml_content, true))
+    }
+
+    fn process_icons(&self, icons: &[Icon]) -> Result<(String, bool)> {
+        if self.should_process_icons(icons) {
+            self.generate_icons_xml(icons)
+        } else {
+            self.load_cached_icons_xml()
+        }
     }
 }
 
@@ -984,16 +1183,24 @@ struct TemplateExtractor {
 
 impl TemplateExtractor {
     fn new() -> Result<Self> {
-        let template_regex = Regex::new(r#"(?s)<template\s+class="([^"]+)"[^>]*>.*?</template>"#)?;
+        let template_regex =
+            Regex::new(r#"(?s)<template\s+class="([^"]+)"[^>]*>.*?</template>"#)
+                .map_err(|error| anyhow::anyhow!("Regex compilation error: {error}"))?;
         let extracted_templates = HashMap::new();
-        Ok(Self { template_regex, extracted_templates })
+        Ok(Self {
+            template_regex,
+            extracted_templates,
+        })
     }
 
     fn extract_all_templates(&mut self) -> &mut Self {
         for capture in self.template_regex.captures_iter(UI_XML) {
             if let Some(class_match) = capture.get(1) {
                 let class_name = heck::AsSnakeCase(class_match.as_str()).to_string();
-                let full_template = capture.get(0).map(|m| m.as_str().to_string()).unwrap_or_default();
+                let full_template = capture
+                    .get(0)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
                 self.extracted_templates.insert(class_name, full_template);
             }
         }
@@ -1004,7 +1211,9 @@ impl TemplateExtractor {
         for (class_name, template_content) in &self.extracted_templates {
             let filename = format!("{class_name}.ui");
             let file_path = output_path.join(filename);
-            let formatted_template = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<interface>{template_content}</interface>");
+            let formatted_template = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<interface>{template_content}</interface>"
+            );
             std::fs::write(file_path, formatted_template)?;
         }
         Ok(self)
@@ -1013,7 +1222,11 @@ impl TemplateExtractor {
     fn build_templates_resources_xml(&self) -> String {
         self.extracted_templates
             .keys()
-            .map(|class_name| format!("<file compressed=\"true\" alias=\"{class_name}.ui\">{class_name}.ui</file>"))
+            .map(|class_name| {
+                format!(
+                    "<file compressed=\"false\" alias=\"{class_name}.ui\">{class_name}.ui</file>"
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -1028,12 +1241,12 @@ impl TemplateExtractor {
 // ===== TEMPLATE PROCESSOR =====
 
 struct TemplateProcessor<'a> {
-    config: &'a BuildConfiguration,
+    paths: &'a Paths,
 }
 
 impl<'a> TemplateProcessor<'a> {
-    fn new(config: &'a BuildConfiguration) -> Self {
-        Self { config }
+    const fn new(paths: &'a Paths) -> Self {
+        Self { paths }
     }
 
     fn process_templates(&self) -> Result<(String, bool)> {
@@ -1045,22 +1258,23 @@ impl<'a> TemplateProcessor<'a> {
     }
 
     fn should_use_cached_templates(&self) -> Result<bool> {
-        FileSystemHelper::target_exists_and_is_newer(
-            &self.config.resources_ui_file,
-            &self.config.templates_xml_file
-        )
+        Ok(self.paths.output_templates_file.exists()
+            && FileSystemHelper::target_exists_and_is_newer(
+                &self.paths.output_templates_file,
+                &self.paths.ui_file,
+            )?)
     }
 
     fn load_cached_templates_xml(&self) -> Result<(String, bool)> {
-        let xml_content = std::fs::read_to_string(&self.config.templates_xml_file)?;
+        let xml_content = std::fs::read_to_string(&self.paths.output_templates_file)?;
         Ok((xml_content, false))
     }
 
     fn regenerate_template_resources(&self) -> Result<(String, bool)> {
         let xml_content = TemplateExtractor::new()?
             .extract_all_templates()
-            .save_template_files_to_directory(&self.config.output_dir)?
-            .save_templates_resources_xml_to_file(&self.config.templates_xml_file)?;
+            .save_template_files_to_directory(&self.paths.output_dir)?
+            .save_templates_resources_xml_to_file(&self.paths.output_templates_file)?;
 
         Ok((xml_content, true))
     }
@@ -1069,16 +1283,16 @@ impl<'a> TemplateProcessor<'a> {
 // ===== RESOURCE COMPILER =====
 
 struct ResourceCompiler<'a> {
-    config: &'a BuildConfiguration,
+    paths: &'a Paths,
     app_prefix: &'a str,
     source_directories: Vec<&'a Path>,
     template_replacements: HashMap<&'a str, &'a str>,
 }
 
 impl<'a> ResourceCompiler<'a> {
-    fn new(config: &'a BuildConfiguration, app_prefix: &'a str) -> Self {
+    fn new(paths: &'a Paths, app_prefix: &'a str) -> Self {
         Self {
-            config,
+            paths,
             app_prefix,
             source_directories: Vec::new(),
             template_replacements: HashMap::new(),
@@ -1097,12 +1311,18 @@ impl<'a> ResourceCompiler<'a> {
 
     fn compile_resources(self) -> Result<()> {
         let final_xml = self.build_final_resources_xml()?;
-        std::fs::write(&self.config.resources_xml_file, &final_xml)?;
+        std::fs::write(&self.paths.output_resources_file, &final_xml)?;
 
         glib_build_tools::compile_resources(
             &self.source_directories,
-            self.config.resources_xml_file.to_str().context("Invalid XML path")?,
-            self.config.compiled_resources_file.to_str().context("Invalid compiled file path")?,
+            self.paths
+                .output_resources_file
+                .to_str()
+                .context("Invalid XML path")?,
+            self.paths
+                .output_resources_compiled_file
+                .to_str()
+                .context("Invalid compiled file path")?,
         );
 
         Ok(())
@@ -1117,14 +1337,23 @@ impl<'a> ResourceCompiler<'a> {
     }
 }
 
+// ===== CARGO ENVIRONMENT VARIABLES =====
+
 struct CargoEnvironmentVariables;
 
 impl CargoEnvironmentVariables {
     fn emit_build_configuration_flags() {
         println!("cargo:rustc-cfg=runtime");
+
+        if std::env::var("SCHEMAS_INSTALLED")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            println!("cargo:rustc-cfg=schemas_installed");
+        }
     }
 
-    fn emit_application_metadata(metadata: &ApplicationMetadata, resources_path: &Path) {
+    fn emit_application_metadata(metadata: &Metadata, paths: &Paths, resources_path: &Path) {
         println!("cargo:rustc-env=APP_NAME={}", metadata.name);
         println!("cargo:rustc-env=APP_DESCRIPTION={}", metadata.description);
         println!("cargo:rustc-env=APP_VERSION={}", metadata.version);
@@ -1133,126 +1362,135 @@ impl CargoEnvironmentVariables {
         println!("cargo:rustc-env=APP_TITLE={}", metadata.title);
         println!("cargo:rustc-env=APP_AUTHORS={}", metadata.authors.join(","));
         println!("cargo:rustc-env=APP_RESOURCES={}", resources_path.display());
-    }
+        println!(
+            "cargo:rustc-env=APP_CATALOG={}",
+            paths.output_catalog_file.display()
+        );
 
-    fn emit_all_environment_variables(metadata: &ApplicationMetadata, resources_path: &Path) {
-        Self::emit_build_configuration_flags();
-        Self::emit_application_metadata(metadata, resources_path);
-    }
-}
-
-// ===== BUILD STATE =====
-
-struct BuildState {
-    icons_regenerated: bool,
-    templates_regenerated: bool,
-    icons_xml_content: String,
-    templates_xml_content: String,
-}
-
-impl BuildState {
-    fn new() -> Self {
-        Self {
-            icons_regenerated: false,
-            templates_regenerated: false,
-            icons_xml_content: String::new(),
-            templates_xml_content: String::new(),
+        if let Ok(dir) = std::env::var("GSETTINGS_SCHEMA_DIR") {
+            println!("cargo:rustc-env=GSETTINGS_SCHEMA_DIR={dir}");
         }
     }
 
-    fn requires_resource_compilation(&self) -> bool {
-        self.icons_regenerated || self.templates_regenerated
-    }
-
-    fn update_icons_state(&mut self, xml_content: String, regenerated: bool) {
-        self.icons_xml_content = xml_content;
-        self.icons_regenerated = regenerated;
-    }
-
-    fn update_templates_state(&mut self, xml_content: String, regenerated: bool) {
-        self.templates_xml_content = xml_content;
-        self.templates_regenerated = regenerated;
+    fn emit_all_environment_variables(metadata: &Metadata, paths: &Paths, resources_path: &Path) {
+        Self::emit_build_configuration_flags();
+        Self::emit_application_metadata(metadata, paths, resources_path);
     }
 }
 
-// ===== BUILD ENVIRONMENT =====
+// ===== STYLE PROCESSOR =====
 
-struct BuildEnvironment;
+struct StyleProcessor<'a> {
+    paths: &'a Paths,
+}
 
-impl BuildEnvironment {
-    fn setup_cargo_configuration() -> Result<()> {
-        println!("cargo:rustc-check-cfg=cfg(runtime)");
-        println!("cargo:rerun-if-changed=build.rs");
-        println!("cargo:rerun-if-changed=resources");
-        Ok(())
+impl<'a> StyleProcessor<'a> {
+    const fn new(paths: &'a Paths) -> Self {
+        Self { paths }
+    }
+
+    fn check_style_updated(&self) -> Result<bool> {
+        FileSystemHelper::target_exists_and_is_newer(
+            &self.paths.style_file,
+            &self.paths.output_resources_compiled_file,
+        )
     }
 }
 
 // ===== BUILD PIPELINE =====
 
 struct BuildPipeline {
-    config: BuildConfiguration,
-    app_metadata: ApplicationMetadata,
+    paths: Paths,
+    metadata: Metadata,
 }
 
 impl BuildPipeline {
     fn new() -> Result<Self> {
-        Ok(Self {
-            config: BuildConfiguration::new()?,
-            app_metadata: ApplicationMetadata::extract_from_cargo()?,
-        })
+        let metadata = Metadata::extract_from_cargo()?;
+        let paths = Paths::new();
+        Ok(Self { paths, metadata })
     }
 
     fn execute_complete_build(&self) -> Result<()> {
-        BuildEnvironment::setup_cargo_configuration()?;
+        Self::setup_build_environment();
 
-        let mut build_state = BuildState::new();
-        
-        let icons = self.process_catalog_data()?;
-        self.process_icon_resources(&mut build_state, icons)?;
-        self.process_template_resources(&mut build_state)?;
-        self.compile_final_resources(&build_state)?;
-        self.emit_cargo_environment_variables();
+        let icons = self.process_catalog()?;
+        let (icons_xml_content, icons_regenerated) = self.process_icons(&icons)?;
+        let (templates_xml_content, templates_regenerated) = self.process_templates()?;
+        let style_updated = self.process_styles()?;
 
-        Ok(())
-    }
+        #[cfg(target_os = "windows")]
+        self.compile_winres()?;
 
-    fn process_catalog_data(&self) -> Result<Vec<Icon>> {
-        let processor = CatalogProcessor::new(&self.config);
-        processor.process_catalog_data()
-    }
-
-    fn process_icon_resources(&self, build_state: &mut BuildState, icons: Vec<Icon>) -> Result<()> {
-        let processor = IconProcessor::new(&self.config);
-        let catalog_data_regenerated = !icons.is_empty();
-        let (xml_content, regenerated) = processor.process_icons(icons, catalog_data_regenerated)?;
-        build_state.update_icons_state(xml_content, regenerated);
-        Ok(())
-    }
-
-    fn process_template_resources(&self, build_state: &mut BuildState) -> Result<()> {
-        let processor = TemplateProcessor::new(&self.config);
-        let (xml_content, regenerated) = processor.process_templates()?;
-        build_state.update_templates_state(xml_content, regenerated);
-        Ok(())
-    }
-
-    fn compile_final_resources(&self, build_state: &BuildState) -> Result<()> {
-        if !build_state.requires_resource_compilation() {
-            return Ok(());
+        if Self::should_compile_resources(icons_regenerated, templates_regenerated, style_updated) {
+            self.compile_resources(&templates_xml_content, &icons_xml_content)?;
         }
 
-        ResourceCompiler::new(&self.config, &self.app_metadata.prefix)
-            .add_template_replacement("APP_ICONS", &build_state.icons_xml_content)
-            .add_template_replacement("APP_TEMPLATES", &build_state.templates_xml_content)
-            .add_source_directory(&self.config.output_dir)
-            .add_source_directory(&self.config.resources_dir)
-            .add_source_directory(&self.config.icons_dir)
+        self.emit_environment_variables();
+
+        Ok(())
+    }
+
+    fn setup_build_environment() {
+        println!("cargo:rustc-check-cfg=cfg(runtime)");
+        println!("cargo:rerun-if-changed=build.rs");
+        println!("cargo:rerun-if-changed=resources");
+    }
+
+    fn process_catalog(&self) -> Result<Vec<Icon>> {
+        let (icons, _) = CatalogProcessor::new(&self.paths).process_catalog_data()?;
+        Ok(icons)
+    }
+
+    fn process_icons(&self, icons: &[Icon]) -> Result<(String, bool)> {
+        IconProcessor::new(&self.paths).process_icons(icons)
+    }
+
+    fn process_templates(&self) -> Result<(String, bool)> {
+        TemplateProcessor::new(&self.paths).process_templates()
+    }
+
+    fn process_styles(&self) -> Result<bool> {
+        StyleProcessor::new(&self.paths).check_style_updated()
+    }
+
+    const fn should_compile_resources(
+        icons_regenerated: bool,
+        templates_regenerated: bool,
+        style_updated: bool,
+    ) -> bool {
+        icons_regenerated || templates_regenerated || style_updated
+    }
+
+    fn compile_resources(&self, templates_xml: &str, icons_xml: &str) -> Result<()> {
+        self.create_resource_compiler()
+            .add_template_replacement("APP_TEMPLATES", templates_xml)
+            .add_template_replacement("APP_ICONS", icons_xml)
+            .add_source_directory(&self.paths.output_dir)
+            .add_source_directory(&self.paths.data_dir)
+            .add_source_directory(&self.paths.output_icons_dir)
             .compile_resources()
     }
 
-    fn emit_cargo_environment_variables(&self) {
-        CargoEnvironmentVariables::emit_all_environment_variables(&self.app_metadata, &self.config.compiled_resources_file);
+    #[cfg(target_os = "windows")]
+    fn compile_winres(&self) -> Result<&Self> {
+        winres::WindowsResource::new()
+            .set_icon(self.paths.icon_file.to_str().unwrap())
+            .compile()?;
+
+        Ok(self)
+    }
+
+    fn create_resource_compiler(&self) -> ResourceCompiler<'_> {
+        ResourceCompiler::new(&self.paths, &self.metadata.prefix)
+    }
+
+    fn emit_environment_variables(&self) {
+        CargoEnvironmentVariables::emit_all_environment_variables(
+            &self.metadata,
+            &self.paths,
+            &self.paths.output_resources_compiled_file,
+        );
     }
 }
 

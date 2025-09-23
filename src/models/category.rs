@@ -5,5 +5,6 @@ pub struct Category {
     pub slug: String,
     pub name: String,
     pub description: String,
+    pub summary: String,
     pub icon: String,
 }
