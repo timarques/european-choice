@@ -59,6 +59,7 @@ string(JSON APP_PREFIX GET ${CARGO_METADATA} "packages" 0 "metadata" "prefix")
 
 set(APP_OUTPUT_DIR "${CMAKE_BINARY_DIR}")
 set(APP_DATA_DIR "${APP_SOURCE_DIR}/data")
+set(APP_SCRIPTS_DIR "${APP_SOURCE_DIR}/scripts")
 set(APP_TARGET_DIR "${APP_OUTPUT_DIR}/target")
 set(APP_README_FILE "${APP_SOURCE_DIR}/")
 set(APP_README_FILE "${APP_SOURCE_DIR}/README.md")
@@ -131,7 +132,9 @@ set(CPACK_IFW_TARGET_DIRECTORY "@ApplicationsDir@/${APP_TITLE}")
 
 set(CPACK_DEBIAN_PACKAGE_SECTION "Utilities")
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "libgtk-4, libadwaita-1")
+
 set(CPACK_RPM_PACKAGE_REQUIRES "gtk4 >= 4.10, libadwaita >= 1.6")
+set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${APP_SCRIPTS_DIR}/rpm_post_install_script.sh")
 
 include(CPack)
 include(CPackIFW)

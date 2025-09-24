@@ -72,7 +72,7 @@ impl ProductRowActivation {
         gtk::UriLauncher::new(&uri_owned).launch(Some(window), None::<&gtk::gio::Cancellable>, move |result| {
             if let Err(e) = result {
                 if let Some(this) = this_weak.upgrade() {
-                    let error = anyhow!("Failed to open website: {website_url}", website_url = uri_owned).context(e);
+                    let error = anyhow!("Failed to open website: {uri_owned}").context(e);
                     this.handle_err(&error);
                 }
             }
