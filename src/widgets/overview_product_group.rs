@@ -80,7 +80,7 @@ impl OverviewProductGroup {
         key
     }
 
-    pub fn rows(&self) -> Ref<HashMap<usize, OverviewProductRow>> {
+    pub fn rows(&self) -> Ref<'_, HashMap<usize, OverviewProductRow>> {
         self.imp().rows.borrow()
     }
 

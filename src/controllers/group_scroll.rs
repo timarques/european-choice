@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::widgets::{OverviewPageWidget, OverviewProductGroupWidget};
 
-const SCROLL_DEBOUNCE: Duration = Duration::from_millis(100);
+const SCROLL_DEBOUNCE: Duration = Duration::from_millis(250);
 const ANIMATION_DURATION: Duration = Duration::from_millis(300);
 const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 

@@ -73,7 +73,7 @@ impl SidebarCategoryList {
         })
     }
 
-    pub fn rows(&self) -> Ref<HashMap<usize, SidebarRow>> {
+    pub fn rows(&self) -> Ref<'_, HashMap<usize, SidebarRow>> {
         self.imp().rows.borrow()
     }
 

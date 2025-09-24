@@ -109,7 +109,7 @@ impl OverviewPage {
         index
     }
 
-    pub fn active_group(&self) -> Option<Ref<OverviewProductGroup>> {
+    pub fn active_group(&self) -> Option<Ref<'_, OverviewProductGroup>> {
         self
             .imp()
             .active_index
@@ -124,7 +124,7 @@ impl OverviewPage {
         self.imp().active_index.get()
     }
 
-    pub fn groups(&self) -> Ref<OrderedMap<OverviewProductGroup>> {
+    pub fn groups(&self) -> Ref<'_, OrderedMap<OverviewProductGroup>> {
         self.imp().groups.borrow()
     }
 
@@ -145,7 +145,7 @@ impl OverviewPage {
         }
     }
 
-    pub fn get_active_group(&self) -> Option<Ref<OverviewProductGroup>> {
+    pub fn get_active_group(&self) -> Option<Ref<'_, OverviewProductGroup>> {
         self
             .imp()
             .active_index

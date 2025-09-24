@@ -14,8 +14,6 @@ mod imp {
         pub icon: RefCell<GString>,
         #[property(get, set)]
         pub label: RefCell<GString>,
-        #[property(get, set, default = true)]
-        pub expand: Cell<bool>,
         #[property(get, construct_only)]
         pub index: Cell<u32>,
     }

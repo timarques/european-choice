@@ -46,6 +46,7 @@ struct Paths {
     data_dir: PathBuf,
     ui_file: PathBuf,
     style_file: PathBuf,
+    #[allow(dead_code)]
     icon_file: PathBuf,
 
     output_dir: PathBuf,
@@ -415,10 +416,11 @@ impl DocumentExtractor {
         let mut results = Vec::new();
 
         for anchor in document.select(selector) {
-            if let Some(href) = anchor.value().attr("href") {
-                if seen.insert(href) {
-                    results.push(href.to_string());
-                }
+            if
+                let Some(href) = anchor.value().attr("href")
+                && seen.insert(href)
+            {
+                results.push(href.to_string());
             }
         }
 

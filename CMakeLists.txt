@@ -8,6 +8,8 @@ include(GNUInstallDirs)
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 find_program(RUSTC_EXECUTABLE rustc REQUIRED)
 find_program(GLIB_COMPILE_SCHEMAS glib-compile-schemas)
+find_program(UPDATE_DESKTOP_DATABASE update-desktop-database)
+find_program(GTK_UPDATE_ICON_CACHE gtk-update-icon-cache)
 find_package(PkgConfig)
 
 set(CMAKE_BUILD_TYPE Release)
@@ -59,9 +61,8 @@ string(JSON APP_PREFIX GET ${CARGO_METADATA} "packages" 0 "metadata" "prefix")
 
 set(APP_OUTPUT_DIR "${CMAKE_BINARY_DIR}")
 set(APP_DATA_DIR "${APP_SOURCE_DIR}/data")
-set(APP_SCRIPTS_DIR "${APP_SOURCE_DIR}/scripts")
+set(APP_POST_INSTALL_SCRIPT_FILE "${APP_SOURCE_DIR}/post_install_script.sh")
 set(APP_TARGET_DIR "${APP_OUTPUT_DIR}/target")
-set(APP_README_FILE "${APP_SOURCE_DIR}/")
 set(APP_README_FILE "${APP_SOURCE_DIR}/README.md")
 set(APP_LICENSE_FILE "${APP_SOURCE_DIR}/LICENSE.txt")
 
@@ -95,49 +96,160 @@ set(APP_GVSBUILD_SCHEMAS_FILE "${APP_GVSBUILD_GTK_DIR}/share/glib-2.0/schemas/gs
 set(APP_GVSBUILD_ZIP ${APP_OUTPUT_DIR}/gvsbuild.zip)
 set(APP_GVSBUILD_URL "https://github.com/wingtk/gvsbuild/releases/download/2025.9.0/GTK4_Gvsbuild_2025.9.0_x64.zip")
 
+# =============================================================================
+# Architecture Detection and Mapping
+# =============================================================================
+
+function(get_package_architecture PACKAGE_TYPE OUTPUT_VAR)
+    string(TOLOWER ${CMAKE_SYSTEM_PROCESSOR} NORMALIZED_ARCH)
+    
+    if(PACKAGE_TYPE STREQUAL "DEB")
+        if(NORMALIZED_ARCH MATCHES "^(x86_64|amd64)$")
+            set(${OUTPUT_VAR} "amd64" PARENT_SCOPE)
+        elseif(NORMALIZED_ARCH MATCHES "^(i[3-6]86|i386)$")
+            set(${OUTPUT_VAR} "i386" PARENT_SCOPE)
+        elseif(NORMALIZED_ARCH MATCHES "^(aarch64|arm64)$")
+            set(${OUTPUT_VAR} "arm64" PARENT_SCOPE)
+        elseif(NORMALIZED_ARCH MATCHES "^(armv7l|armhf)$")
+            set(${OUTPUT_VAR} "armhf" PARENT_SCOPE)
+        else()
+            set(${OUTPUT_VAR} "${CMAKE_SYSTEM_PROCESSOR}" PARENT_SCOPE)
+        endif()
+    elseif(PACKAGE_TYPE STREQUAL "RPM")
+        if(NORMALIZED_ARCH MATCHES "^(x86_64|amd64)$")
+            set(${OUTPUT_VAR} "x86_64" PARENT_SCOPE)
+        elseif(NORMALIZED_ARCH MATCHES "^(i[3-6]86|i386)$")
+            set(${OUTPUT_VAR} "i686" PARENT_SCOPE)
+        elseif(NORMALIZED_ARCH MATCHES "^(aarch64|arm64)$")
+            set(${OUTPUT_VAR} "aarch64" PARENT_SCOPE)
+        elseif(NORMALIZED_ARCH MATCHES "^(armv7l|armhf)$")
+            set(${OUTPUT_VAR} "armv7hl" PARENT_SCOPE)
+        else()
+            set(${OUTPUT_VAR} "${CMAKE_SYSTEM_PROCESSOR}" PARENT_SCOPE)
+        endif()
+    else()
+        # Default case for other package types
+        set(${OUTPUT_VAR} "${CMAKE_SYSTEM_PROCESSOR}" PARENT_SCOPE)
+    endif()
+endfunction()
+
+# Set architecture variables for different package types
+get_package_architecture("DEB" DEBIAN_ARCH)
+get_package_architecture("RPM" RPM_ARCH)
+
+# =============================================================================
+# CPACK Configuration - Enhanced with additional variables
+# =============================================================================
+
 set(CPACK_VERBATIM_VARIABLES ON)
+
+# Basic package metadata
 set(CPACK_PACKAGE_NAME "${APP_NAME}")
 set(CPACK_PACKAGE_VERSION "${APP_VERSION}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${APP_DESCRIPTION}")
+set(CPACK_PACKAGE_DESCRIPTION "${APP_DESCRIPTION}")
 set(CPACK_PACKAGE_HOMEPAGE_URL "${APP_REPOSITORY}")
 set(CPACK_PACKAGE_CONTACT "${APP_AUTHOR}")
 set(CPACK_PACKAGE_VENDOR "${APP_AUTHOR}")
 set(CPACK_PACKAGE_DIRECTORY "${APP_OUTPUT_DIR}")
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "${APP_TITLE}")
 set(CPACK_PACKAGE_ICON "${APP_ICON_FILE}")
+set(CPACK_PACKAGE_EXECUTABLES "${APP_NAME}" "${APP_TITLE}")
 set(CPACK_RESOURCE_FILE_LICENSE "${APP_LICENSE_FILE}")
 set(CPACK_RESOURCE_FILE_README "${APP_README_FILE}")
-set(CPACK_THREADS 0)
 
+# Package file naming
+set(CPACK_PACKAGE_FILE_NAME "${APP_NAME}-${APP_VERSION}-${CMAKE_SYSTEM_PROCESSOR}")
+
+# Performance and optimization
+set(CPACK_THREADS 0)
+set(CPACK_STRIP_FILES TRUE)
+
+# Component-based packaging
+set(CPACK_COMPONENTS_ALL applications runtime documentation)
+set(CPACK_COMPONENT_APPLICATIONS_DISPLAY_NAME "${APP_TITLE}")
+set(CPACK_COMPONENT_APPLICATIONS_DESCRIPTION "The main application executable")
+set(CPACK_COMPONENT_RUNTIME_DISPLAY_NAME "Runtime Dependencies")
+set(CPACK_COMPONENT_RUNTIME_DESCRIPTION "Required libraries and resources")
+set(CPACK_COMPONENT_DOCUMENTATION_DISPLAY_NAME "Documentation")
+set(CPACK_COMPONENT_DOCUMENTATION_DESCRIPTION "License and README documentation")
+
+# Component groups
+set(CPACK_COMPONENT_APPLICATIONS_GROUP "Application")
+set(CPACK_COMPONENT_RUNTIME_GROUP "Dependencies")
+set(CPACK_COMPONENT_DOCUMENTATION_GROUP "Documentation")
+set(CPACK_COMPONENT_GROUP_APPLICATION_DISPLAY_NAME "${APP_TITLE}")
+set(CPACK_COMPONENT_GROUP_DEPENDENCIES_DISPLAY_NAME "Dependencies")
+set(CPACK_COMPONENT_GROUP_DOCUMENTATION_DISPLAY_NAME "Documentation")
+
+# Component requirements
+set(CPACK_COMPONENT_APPLICATIONS_REQUIRED TRUE)
+set(CPACK_COMPONENT_RUNTIME_REQUIRED TRUE)
+set(CPACK_COMPONENT_DOCUMENTATION_REQUIRED FALSE)
+
+# Package generators
 if (UNIX AND NOT APPLE)
     set(CPACK_GENERATOR "DEB;RPM;ZIP")
+    
+    # DEB-specific configuration
+    set(CPACK_DEBIAN_PACKAGE_SECTION "Utilities")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${APP_AUTHOR}")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libgtk-4-0, libadwaita-1-0")
+    set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${APP_REPOSITORY}")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    set(CPACK_DEBIAN_FILE_NAME "DEB-DEFAULT")
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_POLICY TRUE)
+    set(CPACK_DEBIAN_PACKAGE_POSTINST "${APP_POST_INSTALL_SCRIPT_FILE}")
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${DEBIAN_ARCH}")
+    
+    # RPM-specific configuration
+    set(CPACK_RPM_PACKAGE_REQUIRES "gtk4 >= 4.10, libadwaita >= 1.6")
+    set(CPACK_RPM_PACKAGE_VENDOR "${APP_AUTHOR}")
+    set(CPACK_RPM_PACKAGE_URL "${APP_REPOSITORY}")
+    set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0")
+    set(CPACK_RPM_PACKAGE_GROUP "Applications/System")
+    set(CPACK_RPM_FILE_NAME "RPM-DEFAULT")
+    set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${APP_POST_INSTALL_SCRIPT_FILE}")
+    set(CPACK_RPM_PACKAGE_ARCHITECTURE "${RPM_ARCH}")
+    
 elseif (WIN32 AND EXISTS ${APP_GVSBUILD_GTK_DIR})
     set(CPACK_GENERATOR "IFW;ZIP")
+    
 else()
     set(CPACK_GENERATOR "ZIP")
 endif()
 
+# IFW (Qt Installer Framework) configuration
 set(CPACK_IFW_PACKAGE_TITLE "${APP_TITLE}")
 set(CPACK_IFW_PACKAGE_DESCRIPTION "${APP_DESCRIPTION}")
 set(CPACK_IFW_PACKAGE_ICON "${APP_ICON_FILE}")
+set(CPACK_IFW_PACKAGE_WINDOW_ICON "${APP_ICON_FILE}")
 set(CPACK_IFW_PACKAGE_PUBLISHER "${APP_AUTHOR}")
 set(CPACK_IFW_PACKAGE_VERSION "${APP_VERSION}")
 set(CPACK_IFW_PACKAGE_START_MENU_DIRECTORY "${APP_TITLE}")
 set(CPACK_IFW_PACKAGE_WIZARD_STYLE "Modern")
 set(CPACK_IFW_PACKAGE_RUN_PROGRAM "@TargetDir@/${CMAKE_INSTALL_BINDIR}/${APP_EXECUTABLE_FILE_NAME}")
-set(CPACK_IFW_PACKAGE_MAINTENANCE_TOOL_NAME "${APP_NAME}MaintenanceTool")
-set(CPACK_IFW_PACKAGE_MAINTENANCE_TOOL_INI_FILE "${APP_NAME}MaintenanceTool.ini")
+set(CPACK_IFW_PACKAGE_MAINTENANCE_TOOL_NAME "${APP_TITLE}MaintenanceTool")
+set(CPACK_IFW_PACKAGE_MAINTENANCE_TOOL_INI_FILE "${APP_TITLE}MaintenanceTool.ini")
 set(CPACK_IFW_PRODUCT_URL "${APP_REPOSITORY}")
 set(CPACK_IFW_TARGET_DIRECTORY "@ApplicationsDir@/${APP_TITLE}")
+set(CPACK_IFW_VERBOSE ON)
 
-set(CPACK_DEBIAN_PACKAGE_SECTION "Utilities")
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "libgtk-4, libadwaita-1")
+# Source package configuration (optional)
+set(CPACK_SOURCE_GENERATOR "TGZ;ZIP")
+set(CPACK_SOURCE_IGNORE_FILES "/build/;/.git/;/.vscode/;/.idea/;/*.log;/${APP_TARGET_DIR}/")
+set(CPACK_SOURCE_PACKAGE_FILE_NAME "${APP_NAME}-${APP_VERSION}-src")
 
-set(CPACK_RPM_PACKAGE_REQUIRES "gtk4 >= 4.10, libadwaita >= 1.6")
-set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${APP_SCRIPTS_DIR}/rpm_post_install_script.sh")
+# Archive compression
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_COMPRESSION "XZ")
 
 include(CPack)
 include(CPackIFW)
+
+# =============================================================================
+# Dependency Management
+# =============================================================================
 
 if(WIN32 AND (GVSBUILD OR NOT PkgConfig_FOUND))
     if(NOT EXISTS ${APP_GVSBUILD_GTK_DIR})
@@ -192,6 +304,10 @@ else()
     message(FATAL_ERROR "Could not find GTK4 dependencies: neither pkg-config nor gvsbuild available")
 endif()
 
+# =============================================================================
+# Build Targets
+# =============================================================================
+
 add_custom_target(BUILD_BIN ALL
     COMMAND ${CMAKE_COMMAND} -E env
         "OUTPUT_DIR=${APP_OUTPUT_DIR}"
@@ -222,11 +338,13 @@ if(WIN32 AND GVSBUILD)
     )
 endif()
 
-if(UNIX AND NOT APPLE)
-    configure_file("${APP_DESKTOP_TEAMPLATE_FILE}" ${APP_DESKTOP_FILE} @ONLY)
-endif()
+# =============================================================================
+# Installation Configuration
+# =============================================================================
 
 if(UNIX AND NOT APPLE)
+    configure_file("${APP_DESKTOP_TEAMPLATE_FILE}" ${APP_DESKTOP_FILE} @ONLY)
+
     install(
         FILES ${APP_DESKTOP_FILE}
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications
@@ -269,7 +387,7 @@ if(WIN32 AND GVSBUILD)
 endif()
 
 install(
-    FILES "${APP_EXECUTABLE_FILE}"
+    PROGRAMS "${APP_EXECUTABLE_FILE}"
     DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT applications
 )
@@ -292,12 +410,73 @@ install(
     COMPONENT applications
 )
 
-install(CODE "
-    execute_process(
-        COMMAND ${GLIB_COMPILE_SCHEMAS} --strict \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATAROOTDIR}/glib-2.0/schemas\"
-        RESULT_VARIABLE result
-    )
-    if(NOT result EQUAL 0)
-        message(FATAL_ERROR \"glib-compile-schemas failed\")
-    endif()
-")
+# =============================================================================
+# Post-Installation Scripts
+# =============================================================================
+
+if(UNIX AND NOT APPLE)
+    install(CODE "
+        if(NOT DEFINED ENV{CPACK_PACKAGE_FILE_NAME})
+            set(APPS_DIR \"\${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_DATAROOTDIR}/applications\")
+            set(ICONS_DIR \"\${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor\")
+            
+            if(EXISTS \"\${APPS_DIR}\")
+                execute_process(COMMAND update-desktop-database \"\${APPS_DIR}\" ERROR_QUIET)
+            endif()
+            
+            if(EXISTS \"\${ICONS_DIR}\")
+                execute_process(COMMAND gtk-update-icon-cache \"\${ICONS_DIR}\" ERROR_QUIET)
+            endif()
+        endif()
+    ")
+endif()
+
+# =============================================================================
+# Component Installation Descriptions
+# =============================================================================
+
+cpack_add_component_group(Application
+    DISPLAY_NAME "${APP_TITLE}"
+    DESCRIPTION "The main application components"
+    EXPANDED
+)
+
+cpack_add_component_group(Dependencies
+    DISPLAY_NAME "Runtime Dependencies"
+    DESCRIPTION "Libraries and resources required for the application to run"
+    COLLAPSED
+)
+
+cpack_add_component_group(Documentation
+    DISPLAY_NAME "Documentation"
+    DESCRIPTION "License information and user documentation"
+    COLLAPSED
+)
+
+cpack_add_component(applications
+    DISPLAY_NAME "${APP_TITLE}"
+    DESCRIPTION "The main application executable"
+    GROUP Application
+    REQUIRED
+)
+
+cpack_add_component(runtime
+    DISPLAY_NAME "Runtime Dependencies"
+    DESCRIPTION "Required libraries and resources"
+    GROUP Dependencies
+    REQUIRED
+)
+
+cpack_add_component(documentation
+    DISPLAY_NAME "Documentation"
+    DESCRIPTION "License and README documentation"
+    GROUP Documentation
+)
+
+# Debug output to verify architecture detection
+message(STATUS "CPack configuration complete for ${APP_TITLE} v${APP_VERSION}")
+message(STATUS "Package generators: ${CPACK_GENERATOR}")
+message(STATUS "Components: ${CPACK_COMPONENTS_ALL}")
+message(STATUS "Detected system processor: ${CMAKE_SYSTEM_PROCESSOR}")
+message(STATUS "Debian architecture: ${DEBIAN_ARCH}")
+message(STATUS "RPM architecture: ${RPM_ARCH}")
